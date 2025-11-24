@@ -1,0 +1,60 @@
+cd "/Volumes/Marketing/Simone Morciano/python working folder/colour picker/color-picker" && source venv/bin/activate && python color_picker.py
+
+
+0) Install git   macOS:
+Homebrew: brew install git
+Xcode Command Line Tools: xcode-select --install
+Download from: https://git-scm.com/download/mac
+
+1) Clone the Repository
+git clone https://github.com/simoePh83/color-picker.git
+cd color-picker
+
+2) Create the Virtual ENVIRONMENT
+python -m venv .venv
+
+3. Activate Virtual Environment (WIndows)
+.\.venv\Scripts\activate.bat    (or .\.venv\Scripts\activate.bat)
+3. MacOs
+source .venv/bin/activate
+
+4. Install Required Packages
+On Windows
+pip install -r requirements/requirements.txt
+On MacOs
+pip install -r requirements/requirements-macos.txt
+
+5. run the app
+python color_picker.py
+
+6. OPTIONAL. Build executable
+pip install pyinstaller
+pyinstaller color_picker.spec --clean
+
+
+pyinstaller color_picker_macos.spec --clean
+
+
+
+/////////////////////////
+
+
+COMMIT A version
+
+git add .
+git commit -m "MacOs screen capture fixed"
+git push
+
+
+when pulling from other devices
+
+git fetch origin
+git log origin/main --oneline -10
+git status
+git pull origin main
+
+
+
+TO RESET LOCAL CHANGES AND DOWNLOAD LATEST COMMITTED version
+git reset --hard HEAD && git clean -fd
+git pull origin main
