@@ -22,9 +22,19 @@ Sub RefreshLegacyView()
     Dim buildingIndex As Long
     Dim unitIndex As Long
     Dim startRow As Long, endRow As Long
+    Dim propertyCol As Long  ' Column containing building names (Property column)
     
     ' Get Units worksheet
     Set unitsWs = ThisWorkbook.Worksheets("Units")
+    
+    ' Find Property column (contains building names) 
+    propertyCol = 4  ' Default assumption
+    For col = 1 To 10
+        If InStr(LCase(CStr(unitsWs.Cells(1, col).Value)), "property") > 0 Then
+            propertyCol = col
+            Exit For
+        End If
+    Next col
     
     ' Remove and recreate Legacy View for clean start
     On Error Resume Next
@@ -86,7 +96,7 @@ Sub RefreshLegacyView()
     buildingCount = 0
     
     For i = 2 To lastRow
-        buildingName = Trim(CStr(unitsWs.Cells(i, 1).Value))
+        buildingName = Trim(CStr(unitsWs.Cells(i, propertyCol).Value))  ' Use Property column
         If buildingName <> "" And buildingName <> "0" And buildingName <> "False" Then
             Dim buildingExists As Boolean
             buildingExists = False
@@ -126,7 +136,7 @@ Sub RefreshLegacyView()
         unitCount = 0
         
         For i = 2 To lastRow
-            If Trim(CStr(unitsWs.Cells(i, 1).Value)) = currentBuilding Then
+            If Trim(CStr(unitsWs.Cells(i, propertyCol).Value)) = currentBuilding Then
                 unitCount = unitCount + 1
                 ReDim Preserve unitRows(1 To unitCount)
                 unitRows(unitCount) = i

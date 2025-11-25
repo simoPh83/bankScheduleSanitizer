@@ -143,7 +143,7 @@ class BankScheduleSanitizer:
             self.log_message(f"✗ {error_msg}")
             return False, error_msg
             
-    def refactor_formula(self, formula, source_row, target_row, column_offset=1):
+    def refactor_formula(self, formula, source_row, target_row, column_mapping=None):
         """
         Refactor Excel formula by adjusting cell references for new sheet structure.
         
@@ -151,7 +151,7 @@ class BankScheduleSanitizer:
             formula: The original formula string (e.g., '=V7/H7')
             source_row: Original row number in source sheet
             target_row: Target row number in new sheet
-            column_offset: Column shift due to added columns (default 1 for Building column)
+            column_mapping: Dict mapping source column numbers to target column numbers
         
         Returns:
             Refactored formula string
@@ -160,6 +160,9 @@ class BankScheduleSanitizer:
         
         if not formula or not formula.startswith('='):
             return formula
+            
+        if column_mapping is None:
+            column_mapping = {}
         
         try:
             # Pattern to match cell references like H7, V7, etc.
@@ -174,8 +177,12 @@ class BankScheduleSanitizer:
                 for char in col_letters:
                     old_col_num = old_col_num * 26 + (ord(char) - ord('A') + 1)
                 
-                # Apply column shift (add offset for Building column)
-                new_col_num = old_col_num + column_offset
+                # Apply column mapping if available
+                if old_col_num in column_mapping:
+                    new_col_num = column_mapping[old_col_num]
+                else:
+                    # Fallback: no change if mapping not found
+                    new_col_num = old_col_num
                 
                 # Calculate new row number
                 # If the original reference was to the same row as source, map it to target row
@@ -294,12 +301,22 @@ Sub RefreshLegacyView()
         End If
     Next col
     
-    ' Group units by building
+    ' Group units by building - find Property column first
     Set buildingDict = CreateObject("Scripting.Dictionary")
     lastRow = unitsWs.Cells(unitsWs.Rows.Count, 1).End(xlUp).Row
     
+    ' Find Property column (contains building names)
+    Dim propertyCol As Long
+    propertyCol = 4  ' Default to column 4 (typical Property column position)
+    For col = 1 To 10  ' Search first 10 columns
+        If InStr(LCase(CStr(unitsWs.Cells(1, col).Value)), "property") > 0 Then
+            propertyCol = col
+            Exit For
+        End If
+    Next col
+    
     For i = 2 To lastRow
-        buildingName = Trim(CStr(unitsWs.Cells(i, 1).Value))
+        buildingName = Trim(CStr(unitsWs.Cells(i, propertyCol).Value))  ' Use Property column instead of column 1
         If buildingName <> "" Then
             If Not buildingDict.Exists(buildingName) Then
                 Set buildingDict(buildingName) = New Collection
@@ -660,20 +677,15 @@ End Sub
             raise
             
     def create_buildings_summary_sheet(self, input_path, output_path, analysis_results):
-        """Create a new 'Buildings' sheet with building summary data while preserving original formatting."""
+        """Create a new 'Buildings' sheet with building summary data and SUM formulas linking to Units sheet."""
         try:
-            self.log_message("Step 4: Creating Buildings summary sheet...")
+            self.log_message("Step 5: Creating Buildings summary sheet with SUM formulas...")
             
             # Import openpyxl for direct Excel manipulation
             from openpyxl import load_workbook
             from openpyxl.utils import get_column_letter
-            import shutil
             
-            # First, copy the original file to preserve all formatting and formulas
-            shutil.copy2(input_path, output_path)
-            self.log_message("Original file copied with all formatting preserved")
-            
-            # Now open the copied file and add the new Buildings sheet
+            # Open the workbook (file already exists from Units sheet creation)
             workbook = load_workbook(output_path)
             
             # Get building names from analysis results
@@ -684,22 +696,98 @@ End Sub
             # Create the new Buildings worksheet
             buildings_ws = workbook.create_sheet("Buildings")
             
-            # Define headers
-            headers = [
-                'Building', 'Net Area', 'Rent PA (£)', '2023 ERV (£)', 
-                '2024 ERV (£)', 'ERV 2024 £.Sq.ft', 'ERV Variation', '2024 Cap Valn. (£)'
+            # Define headers - only meaningful summary columns for Buildings sheet
+            # These are the columns that make sense to sum up for building totals
+            meaningful_headers = [
+                "Building",
+                "Net Area", 
+                "Rent PA (£)",
+                "2023 ERV (£)",
+                "2024 ERV (£)", 
+                "ERV 2024 £.Sq.ft",
+                "ERV Variation"
             ]
             
-            # Write headers to the first row
-            for col_num, header in enumerate(headers, 1):
-                buildings_ws.cell(row=1, column=col_num, value=header)
+            self.log_message(f"📋 Using {len(meaningful_headers)} meaningful summary columns for Buildings sheet")
             
-            # Write building names to the first column (starting from row 2)
+            # Get the Units sheet to find column mappings
+            units_ws = workbook["Units"]
+            
+            # Map meaningful headers to their Units sheet column positions
+            header_to_col_mapping = {}
+            
+            self.log_message("🔍 Analyzing Units sheet headers for column mapping...")
+            for col in range(1, units_ws.max_column + 1):
+                header_value = units_ws.cell(row=1, column=col).value
+                if header_value and str(header_value).strip():
+                    clean_header = str(header_value).strip()
+                    self.log_message(f"   Column {col}: '{clean_header}'")
+                    
+                    for meaningful_header in meaningful_headers[1:]:  # Skip "Building" 
+                        if meaningful_header.lower() in clean_header.lower() or clean_header.lower() in meaningful_header.lower():
+                            header_to_col_mapping[meaningful_header] = col
+                            self.log_message(f"   ✅ Matched '{meaningful_header}' -> Column {col} ('{clean_header}')")
+                            break
+            
+            self.log_message(f"📋 Final mapping: {header_to_col_mapping}")
+            self.log_message(f"📋 Found {len(header_to_col_mapping)} matching columns in Units sheet")
+            
+            # Write headers to the first row
+            for col_num, header in enumerate(meaningful_headers, 1):
+                cell = buildings_ws.cell(row=1, column=col_num, value=header)
+                # Make headers bold
+                from openpyxl.styles import Font
+                cell.font = Font(bold=True)
+            
+            # For each building, create a row with SUM formulas
             for row_num, building_name in enumerate(building_names, 2):
+                # Write building name to the first column
                 buildings_ws.cell(row=row_num, column=1, value=building_name)
+                
+                # For each meaningful data column (skip Building column), create SUM formula
+                for col_num in range(2, len(meaningful_headers) + 1):
+                    header_name = meaningful_headers[col_num - 1]
+                    
+                    # Only create formula if we found this column in Units sheet
+                    if header_name in header_to_col_mapping:
+                        units_col_num = header_to_col_mapping[header_name]
+                        units_col_letter = get_column_letter(units_col_num)
+                        
+                        # Find Property column in Units sheet (contains building names)
+                        property_col_letter = "D"  # Default to column D (Property)
+                        for col in range(1, 10):
+                            header_val = units_ws.cell(row=1, column=col).value
+                            if header_val:
+                                header_clean = str(header_val).lower().strip()
+                                # Look for exact "property" match, not "property number"
+                                if header_clean == "property":
+                                    property_col_letter = get_column_letter(col)
+                                    break
+                        
+                        # Create SUMIF formula with proper error handling
+                        try:
+                            # Use proper Excel sheet reference format
+                            formula = f'=SUMIF(Units!{property_col_letter}:{property_col_letter},"{building_name}",Units!{units_col_letter}:{units_col_letter})'
+                            
+                            cell = buildings_ws.cell(row=row_num, column=col_num)
+                            cell.value = formula
+                            
+                            # Copy number formatting from Units sheet if possible
+                            try:
+                                units_data_cell = units_ws.cell(row=2, column=units_col_num)
+                                if units_data_cell.number_format:
+                                    cell.number_format = units_data_cell.number_format
+                            except:
+                                pass
+                                
+                        except Exception as formula_error:
+                            self.log_message(f"   ❌ Could not create formula for {header_name}: {str(formula_error)}")
+                            # Leave cell empty if formula creation fails
+            
+            self.log_message(f"✅ Created SUM formulas for {len(building_names)} buildings across {len(meaningful_headers)-1} data columns")
             
             # Add autofilter to the headers
-            buildings_ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+            buildings_ws.auto_filter.ref = f"A1:{get_column_letter(len(meaningful_headers))}1"
             self.log_message("✅ Autofilter applied to Buildings sheet headers")
             
             # Auto-width all columns
@@ -720,7 +808,7 @@ End Sub
             workbook.save(output_path)
             workbook.close()
             
-            self.log_message("✅ Buildings summary sheet created successfully")
+            self.log_message("✅ Buildings summary sheet created successfully with SUM formulas")
             self.log_message("✅ Original formatting and formulas preserved in all existing sheets")
             return True
             
@@ -731,7 +819,7 @@ End Sub
     def create_units_sheet(self, input_path, output_path, building_names):
         """Create a new 'Units' sheet with all unit data and building validation dropdown."""
         try:
-            self.log_message("Step 5: Creating Units sheet with data validation...")
+            self.log_message("Step 4: Creating Units sheet with data validation...")
             
             # Import additional openpyxl components
             from openpyxl import load_workbook
@@ -739,6 +827,11 @@ End Sub
             from openpyxl.styles import NamedStyle
             from openpyxl.worksheet.datavalidation import DataValidation
             import copy
+            import shutil
+            
+            # First, copy the original file to preserve all formatting and formulas
+            shutil.copy2(input_path, output_path)
+            self.log_message("Original file copied with all formatting preserved")
             
             # Open the workbook
             workbook = load_workbook(output_path)
@@ -765,15 +858,30 @@ End Sub
             # Create the new Units worksheet
             units_ws = workbook.create_sheet("Units")
             
-            # Copy headers from source sheet (row 3, which is index 2)
-            # First add "Building" as the first column
-            units_ws.cell(row=1, column=1, value="Building")
+            # Build column mapping: source column number -> target column number
+            column_mapping = {}
             
-            # Then copy all original headers (shifting by 1 column)
+            # Copy headers from source sheet (row 3, which is index 2)
+            # Start with "Surveyor" column (skip Building column since Property already has building names)
+            # Also skip the empty column after Surveyor
+            
+            # Find Surveyor column in source (typically column B)
             header_row = 3  # Headers are in row 3 of source sheet
-            for col_idx in range(1, source_ws.max_column + 1):
+            surveyor_col_idx = 2  # Column B (1-indexed, so 2)
+            target_col = 1  # Start at column A in Units sheet
+            
+            # Copy headers starting from Surveyor column and build column mapping
+            for col_idx in range(surveyor_col_idx, source_ws.max_column + 1):
                 source_cell = source_ws.cell(row=header_row, column=col_idx)
-                target_cell = units_ws.cell(row=1, column=col_idx + 1)
+                
+                # Skip empty columns (like the one after Surveyor)
+                if not source_cell.value or str(source_cell.value).strip() == '':
+                    continue
+                
+                # Build column mapping: source column -> target column
+                column_mapping[col_idx] = target_col
+                
+                target_cell = units_ws.cell(row=1, column=target_col)
                 
                 # Handle potential formulas in headers (rare but possible)
                 if source_cell.value and isinstance(source_cell.value, str) and source_cell.value.startswith('='):
@@ -781,7 +889,7 @@ End Sub
                         source_cell.value, 
                         header_row, 
                         1, 
-                        column_offset=1
+                        column_mapping=column_mapping
                     )
                     target_cell.value = refactored_formula
                 else:
@@ -798,6 +906,11 @@ End Sub
                         target_cell.alignment = copy.copy(source_cell.alignment)
                 except Exception as e:
                     self.log_message(f"   ⚠️ Could not copy formatting for header cell: {str(e)}")
+                
+                target_col += 1
+            
+            self.log_message(f"📋 Built column mapping: {len(column_mapping)} columns mapped")
+            self.log_message(f"   Mapping: {dict(list(column_mapping.items())[:5])}...")  # Show first 5 mappings
             
             # Track units and their buildings
             current_building = None
@@ -828,24 +941,28 @@ End Sub
                     if not any(keyword in building_name.lower() for keyword in ['note', 'capital values', 'rent pa', 'as a result']):
                         current_building = building_name
                 else:
-                    # This is a unit row - copy all data
+                    # This is a unit row - copy data starting from Surveyor column
                     if current_building:
-                        # Set building name in first column
-                        units_ws.cell(row=units_row, column=1, value=current_building)
+                        target_col = 1  # Start at column A in Units sheet
                         
-                        # Copy all other data (shifting by 1 column)
-                        for col_idx in range(1, source_ws.max_column + 1):
-                            source_cell = source_ws.cell(row=source_row_idx, column=col_idx)
-                            target_cell = units_ws.cell(row=units_row, column=col_idx + 1)
+                        # Copy data using the column mapping we built
+                        for source_col_idx in range(surveyor_col_idx, source_ws.max_column + 1):
+                            # Only process columns that are in our mapping
+                            if source_col_idx not in column_mapping:
+                                continue
                             
-                            # Handle formulas with refactoring
+                            source_cell = source_ws.cell(row=source_row_idx, column=source_col_idx)
+                            target_col = column_mapping[source_col_idx]
+                            target_cell = units_ws.cell(row=units_row, column=target_col)
+                            
+                            # Handle formulas with refactoring using proper column mapping
                             if source_cell.value and isinstance(source_cell.value, str) and source_cell.value.startswith('='):
                                 # Refactor formula for new sheet structure
                                 refactored_formula = self.refactor_formula(
                                     source_cell.value, 
                                     source_row_idx, 
                                     units_row, 
-                                    column_offset=1
+                                    column_mapping=column_mapping
                                 )
                                 target_cell.value = refactored_formula
                             else:
@@ -1029,20 +1146,20 @@ End Sub
                 messagebox.showerror("Analysis Error", f"Could not analyze data structure: {str(e)}")
                 return
             
-            self.log_message("Step 3: Processing file and creating Buildings summary...")
+            self.log_message("Step 3: Processing file and creating Units & Buildings sheets...")
             
-            # Show save dialog with .xlsm extension for macro support
+            # Show save dialog with .xlsx extension (standard Excel format)
             input_name = os.path.basename(input_path)
             base_name = os.path.splitext(input_name)[0]
-            suggested_name = f"sanitized_{base_name}.xlsm"  # Use .xlsm for macro support
+            suggested_name = f"sanitized_{base_name}.xlsx"  # Use .xlsx for compatibility
             
             output_path = filedialog.asksaveasfilename(
-                title="Save Sanitized File As (Macro-Enabled)",
-                defaultextension=".xlsm",
+                title="Save Sanitized File As",
+                defaultextension=".xlsx",
                 initialfile=suggested_name,
                 filetypes=[
-                    ("Excel Macro-Enabled files", "*.xlsm"),
                     ("Excel files", "*.xlsx"),
+                    ("Excel Macro-Enabled files", "*.xlsm"),
                     ("All files", "*.*")
                 ]
             )
@@ -1052,11 +1169,12 @@ End Sub
                 self.log_message("="*50 + "\n")
                 return
             
-            # Create the new file with Buildings summary sheet
+            # Create the new file - Units sheet first, then Buildings with SUM formulas
             try:
-                self.create_buildings_summary_sheet(input_path, output_path, analysis_results)
                 # Create Units sheet using the building names from analysis
                 self.create_units_sheet(input_path, output_path, analysis_results['building_names'])
+                # Create Buildings summary sheet with SUM formulas referencing Units sheet
+                self.create_buildings_summary_sheet(input_path, output_path, analysis_results)
                 # Create hierarchical legacy view for familiar format
                 self.create_hierarchical_view_sheet_from_files(input_path, output_path, analysis_results['building_names'])
             except Exception as e:
