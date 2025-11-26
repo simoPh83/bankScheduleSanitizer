@@ -675,8 +675,139 @@ End Sub
         except Exception as e:
             self.log_message(f"Error analyzing data: {str(e)}")
             raise
+    
+    def analyze_cap_valn_locations(self, input_path):
+        """Analyze Bank Schedule to find Cap Valn locations for each building according to the parsing logic."""
+        try:
+            self.log_message("🔍 Analyzing Bank Schedule structure to find Cap Valn locations...")
             
-    def create_buildings_summary_sheet(self, input_path, output_path, analysis_results):
+            # Load the Bank Schedule workbook directly with openpyxl for row-by-row analysis
+            from openpyxl import load_workbook
+            wb = load_workbook(input_path, data_only=False)
+            
+            if 'Bank Schedule' not in wb.sheetnames:
+                self.log_message("❌ Bank Schedule sheet not found")
+                return {}
+            
+            bank_ws = wb['Bank Schedule']
+            
+            # Find the "Unit Demise" column and "2024 Cap Valn. (£)" column
+            unit_demise_col = None
+            cap_valn_col = None
+            property_col = None
+            
+            for col in range(1, 50):  # Check first 50 columns
+                header_val = bank_ws.cell(row=3, column=col).value  # Headers are in row 3 based on debug
+                if header_val:
+                    header_clean = str(header_val).lower().strip()
+                    if 'unit demise' in header_clean:
+                        unit_demise_col = col
+                        self.log_message(f"Found 'Unit Demise' column at: {chr(64+col)}")
+                    elif '2024 cap valn' in header_clean:
+                        cap_valn_col = col  # Should be column AB (28)
+                        self.log_message(f"Found '2024 Cap Valn' column at: {chr(64+col) if col <= 26 else 'A' + chr(64+col-26)}")
+                    elif header_clean == 'property':
+                        property_col = col
+                        self.log_message(f"Found 'Property' column at: {chr(64+col)}")
+            
+            if not unit_demise_col or not cap_valn_col or not property_col:
+                self.log_message(f"❌ Required columns not found: Unit Demise={unit_demise_col}, Cap Valn={cap_valn_col}, Property={property_col}")
+                return {}
+            
+            # Map building names to their Cap Valn row locations
+            cap_valn_mapping = {}
+            
+            # Start parsing from row 5 (after headers) based on debug output
+            current_row = 5
+            max_rows = bank_ws.max_row  # Use full sheet, no artificial limit
+            iteration_count = 0
+            max_iterations = max_rows * 2  # Generous safety measure based on actual sheet size
+            
+            self.log_message(f"Starting Cap Valn analysis from row {current_row} to max row {max_rows}")
+            
+            while current_row <= max_rows and iteration_count < max_iterations:
+                iteration_count += 1
+                
+                # Safety check for infinite loops
+                if iteration_count % 50 == 0:
+                    self.log_message(f"Processing iteration {iteration_count}, current row: {current_row}")
+                
+                # Check if current row has a value in Unit Demise column
+                unit_demise_value = bank_ws.cell(row=current_row, column=unit_demise_col).value
+                
+                if unit_demise_value and str(unit_demise_value).strip():
+                    # This is a unit row - get the building name
+                    building_name = bank_ws.cell(row=current_row, column=property_col).value
+                    if building_name and str(building_name).strip():  # Ensure building name exists
+                        building_name = str(building_name).strip()
+                        
+                        # Skip if we've already processed this building
+                        if building_name in cap_valn_mapping:
+                            current_row += 1
+                            continue
+                        
+                        # Check if this is a single unit building or multi-unit building
+                        # Look at the next row's Unit Demise column AND building name
+                        next_row_unit_demise = None
+                        next_row_building = None
+                        if current_row + 1 <= max_rows:
+                            next_row_unit_demise = bank_ws.cell(row=current_row + 1, column=unit_demise_col).value
+                            next_row_building = bank_ws.cell(row=current_row + 1, column=property_col).value
+                        
+                        # Single unit building if next row has no unit demise OR has unit demise but different building
+                        if (not next_row_unit_demise or not str(next_row_unit_demise).strip() or
+                            not next_row_building or str(next_row_building).strip() != building_name):
+                            # Single unit building - Cap Valn is in the current row
+                            cap_valn_row = current_row
+                            self.log_message(f"Single unit building '{building_name}' - Cap Valn at row {cap_valn_row}")
+                            cap_valn_mapping[building_name] = cap_valn_row
+                            current_row += 1
+                        else:
+                            # Multi-unit building - find the last unit row (Y) for this building
+                            last_unit_row = current_row
+                            temp_row = current_row + 1
+                            
+                            # Keep checking until we find an empty Unit Demise or different building
+                            while temp_row <= max_rows:
+                                temp_unit_demise = bank_ws.cell(row=temp_row, column=unit_demise_col).value
+                                temp_building = bank_ws.cell(row=temp_row, column=property_col).value
+                                
+                                # Check if still same building and has unit demise
+                                if (temp_unit_demise and str(temp_unit_demise).strip() and 
+                                    temp_building and str(temp_building).strip() == building_name):
+                                    last_unit_row = temp_row
+                                    temp_row += 1
+                                else:
+                                    break
+                            
+                            # Y+2 is the summary row (Y+1 is empty, Y+2 has totals)
+                            summary_row = last_unit_row + 2
+                            self.log_message(f"Multi-unit building '{building_name}' - units from {current_row} to {last_unit_row}, summary at row {summary_row}")
+                            cap_valn_mapping[building_name] = summary_row
+                            
+                            # Y+4 should be the beginning of the next building
+                            current_row = last_unit_row + 4
+                    else:
+                        # Unit Demise exists but no building name - skip this row
+                        current_row += 1
+                else:
+                    current_row += 1
+            
+            if iteration_count >= max_iterations:
+                self.log_message(f"⚠️ Stopped analysis due to max iterations limit ({max_iterations})")
+            
+            wb.close()
+            self.log_message(f"✅ Found Cap Valn locations for {len(cap_valn_mapping)} buildings")
+            for building, row in cap_valn_mapping.items():
+                self.log_message(f"  {building} -> Row {row}")
+            
+            return cap_valn_mapping
+            
+        except Exception as e:
+            self.log_message(f"❌ Error analyzing Cap Valn locations: {str(e)}")
+            return {}
+            
+    def create_buildings_summary_sheet(self, input_path, output_path, analysis_results, cap_valn_mapping):
         """Create a new 'Buildings' sheet with building summary data and SUM formulas linking to Units sheet."""
         try:
             self.log_message("Step 5: Creating Buildings summary sheet with SUM formulas...")
@@ -704,8 +835,7 @@ End Sub
                 "Rent PA (£)",
                 "2023 ERV (£)",
                 "2024 ERV (£)", 
-                "ERV 2024 £.Sq.ft",
-                "ERV Variation"
+                "2024 Cap Valn. (£)"
             ]
             
             self.log_message(f"📋 Using {len(meaningful_headers)} meaningful summary columns for Buildings sheet")
@@ -744,12 +874,33 @@ End Sub
                 # Write building name to the first column
                 buildings_ws.cell(row=row_num, column=1, value=building_name)
                 
-                # For each meaningful data column (skip Building column), create SUM formula
+                # For each meaningful data column (skip Building column), create appropriate formula
                 for col_num in range(2, len(meaningful_headers) + 1):
                     header_name = meaningful_headers[col_num - 1]
                     
-                    # Only create formula if we found this column in Units sheet
-                    if header_name in header_to_col_mapping:
+                    # Special handling for 2024 Cap Valn. - use direct cell reference from mapping
+                    if header_name == "2024 Cap Valn. (£)":
+                        try:
+                            if building_name in cap_valn_mapping:
+                                cap_valn_row = cap_valn_mapping[building_name]
+                                # Create direct cell reference to Bank Schedule with correct Excel syntax
+                                formula = f'=\'Bank Schedule\'!AB{cap_valn_row}'
+                                
+                                cell = buildings_ws.cell(row=row_num, column=col_num)
+                                cell.value = formula
+                                
+                                # Set currency formatting for cap valuation
+                                cell.number_format = '£#,##0'
+                                
+                                self.log_message(f"   ✅ Created Cap Valn formula for {building_name}: Row {cap_valn_row}")
+                            else:
+                                self.log_message(f"   ⚠️ No Cap Valn mapping found for {building_name}")
+                                
+                        except Exception as formula_error:
+                            self.log_message(f"   ❌ Could not create cap valuation formula for {building_name}: {str(formula_error)}")
+                    
+                    # Regular SUMIF formulas for other columns
+                    elif header_name in header_to_col_mapping:
                         units_col_num = header_to_col_mapping[header_name]
                         units_col_letter = get_column_letter(units_col_num)
                         
@@ -1171,12 +1322,15 @@ End Sub
             
             # Create the new file - Units sheet first, then Buildings with SUM formulas
             try:
+                # Analyze Cap Valn locations in Bank Schedule before creating sheets
+                cap_valn_mapping = self.analyze_cap_valn_locations(input_path)
+                
                 # Create Units sheet using the building names from analysis
                 self.create_units_sheet(input_path, output_path, analysis_results['building_names'])
                 # Create Buildings summary sheet with SUM formulas referencing Units sheet
-                self.create_buildings_summary_sheet(input_path, output_path, analysis_results)
-                # Create hierarchical legacy view for familiar format
-                self.create_hierarchical_view_sheet_from_files(input_path, output_path, analysis_results['building_names'])
+                self.create_buildings_summary_sheet(input_path, output_path, analysis_results, cap_valn_mapping)
+                # Create hierarchical legacy view for familiar format - TEMPORARILY DISABLED
+                # self.create_hierarchical_view_sheet_from_files(input_path, output_path, analysis_results['building_names'])
             except Exception as e:
                 self.log_message(f"❌ Error creating output file: {str(e)}")
                 messagebox.showerror("File Creation Error", f"Could not create output file: {str(e)}")
@@ -1184,32 +1338,8 @@ End Sub
             
             self.log_message(f"✅ Sanitized file saved successfully to: {os.path.basename(output_path)}")
             
-            # Show success message with analysis results
-            success_message = f"""File processed successfully!
-
-Analysis Results:
-• Buildings: {analysis_results['buildings']}
-• Units: {analysis_results['units']}
-• Empty rows: {analysis_results['empty_rows']}
-• Total rows: {analysis_results['total_rows']}
-
-New Features:
-• Added 'Buildings' summary sheet with autofilter and auto-width
-• Added 'Units' sheet with all unit data and Status column
-• Created dynamic 'Legacy View' with VBA macro support
-• Extracted building names automatically
-• Preserved all original formatting and formulas
-
-VBA MACRO SETUP (for dynamic Legacy View):
-1. Open the saved file in Excel
-2. Press Alt+F11 to open VBA Editor
-3. Right-click workbook > Insert > Module
-4. Import RefreshLegacyView_VBA.bas file
-5. Save as .xlsm format
-6. Use Ctrl+Shift+R to refresh Legacy View
-
-Saved to:
-{output_path}"""
+            # Show simple success message
+            success_message = "File processed successfully!"
             
             messagebox.showinfo("Success", success_message)
             
