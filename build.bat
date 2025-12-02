@@ -4,23 +4,32 @@ REM build.bat - Windows batch script to create executable using PyInstaller
 echo 🚀 Building Bank Schedule Sanitizer Executable...
 echo.
 
-REM Check if virtual environment is activated
-if "%VIRTUAL_ENV%"=="" (
-    echo ⚠️ Warning: Virtual environment not detected. Please activate your venv first:
-    echo    python -m venv .venv
-    echo    .venv\Scripts\activate
-    echo    pip install -r requirements.txt
-    echo.
+REM Check if virtual environment exists
+if not exist ".venv\Scripts\activate.bat" (
+    echo ⚠️ Virtual environment not found. Creating one now...
+    python -m venv .venv
+    call .venv\Scripts\activate.bat
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+) else (
+    echo ✓ Activating virtual environment...
+    call .venv\Scripts\activate.bat
 )
+
+REM Clean previous builds
+if exist "build" rmdir /s /q build
+if exist "dist" rmdir /s /q dist
 
 REM Create the executable
 echo 📦 Creating executable with PyInstaller...
-pyinstaller --onefile --windowed ^
+.venv\Scripts\pyinstaller.exe --onefile --windowed ^
     --name "BankScheduleSanitizer" ^
     --add-data "instructions;instructions" ^
     --hidden-import=pandas ^
     --hidden-import=openpyxl ^
     --hidden-import=xlsxwriter ^
+    --exclude-module=pytest ^
+    --exclude-module=_pytest ^
     bank_schedule_sanitizer.py
 
 if %ERRORLEVEL% equ 0 (
