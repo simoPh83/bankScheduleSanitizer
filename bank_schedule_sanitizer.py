@@ -66,6 +66,17 @@ class BankScheduleSanitizer:
             width=10
         ).pack(side=tk.RIGHT, padx=(10, 0))
         
+        # Sheet status label
+        self.sheet_status_label = tk.Label(
+            main_frame,
+            text="",
+            font=("Arial", 9),
+            fg="#666666",
+            wraplength=550,
+            justify=tk.LEFT
+        )
+        self.sheet_status_label.pack(pady=(10, 0), anchor=tk.W)
+        
         # Sanitize button
         self.sanitize_button = tk.Button(
             main_frame, 
@@ -109,6 +120,8 @@ class BankScheduleSanitizer:
         if file_path:
             self.input_file_path.set(file_path)
             self.log_message(f"Selected input file: {os.path.basename(file_path)}")
+            # Check for existing sheets and update status
+            self.update_sheet_status_message(file_path)
             # Enable sanitize button when input file is selected
             self.sanitize_button.config(state=tk.NORMAL)
             
@@ -117,6 +130,54 @@ class BankScheduleSanitizer:
         self.status_text.insert(tk.END, f"{message}\n")
         self.status_text.see(tk.END)
         self.root.update_idletasks()
+        
+    def check_existing_sheets(self, file_path):
+        """Check if Units and Buildings sheets already exist in the Excel file."""
+        try:
+            excel_file = pd.ExcelFile(file_path)
+            sheet_names = excel_file.sheet_names
+            
+            units_exists = "Units" in sheet_names
+            buildings_exists = "Buildings" in sheet_names
+            
+            return {
+                'units_exists': units_exists,
+                'buildings_exists': buildings_exists,
+                'sheet_names': sheet_names
+            }
+        except Exception as e:
+            self.log_message(f"Could not check existing sheets: {str(e)}")
+            return {
+                'units_exists': False,
+                'buildings_exists': False,
+                'sheet_names': []
+            }
+        
+    def update_sheet_status_message(self, file_path):
+        """Update the sheet status label based on existing sheets in the file."""
+        if not file_path:
+            self.sheet_status_label.config(text="")
+            return
+            
+        sheet_info = self.check_existing_sheets(file_path)
+        
+        units_exists = sheet_info['units_exists']
+        buildings_exists = sheet_info['buildings_exists']
+        
+        if units_exists and buildings_exists:
+            status_text = "📋 Both 'Units' and 'Buildings' sheets found - they will be updated with new data."
+            color = "#FF8C00"  # Orange for update
+        elif units_exists and not buildings_exists:
+            status_text = "📋 'Units' sheet found (will be updated). 'Buildings' sheet will be created."
+            color = "#1E90FF"  # Blue for mixed
+        elif not units_exists and buildings_exists:
+            status_text = "📋 'Buildings' sheet found (will be updated). 'Units' sheet will be created."
+            color = "#1E90FF"  # Blue for mixed
+        else:
+            status_text = "📋 'Units' and 'Buildings' sheets will be created."
+            color = "#228B22"  # Green for new creation
+        
+        self.sheet_status_label.config(text=status_text, fg=color)
         
     def validate_excel_file(self, file_path):
         """Validate that the Excel file exists and can be read."""
@@ -711,8 +772,22 @@ End Sub
                         self.log_message(f"Found 'Property' column at: {chr(64+col)}")
             
             if not unit_demise_col or not cap_valn_col or not property_col:
-                self.log_message(f"❌ Required columns not found: Unit Demise={unit_demise_col}, Cap Valn={cap_valn_col}, Property={property_col}")
-                return {}
+                # Create detailed error message for user
+                missing_columns = []
+                if not unit_demise_col:
+                    missing_columns.append("Unit Demise")
+                if not cap_valn_col:
+                    missing_columns.append("2025 Cap Valn. (£)")
+                if not property_col:
+                    missing_columns.append("Property")
+                
+                error_msg = f"Required columns not found in Bank Schedule sheet: {', '.join(missing_columns)}"
+                self.log_message(f"❌ {error_msg}")
+                self.log_message(f"   Debug info - Unit Demise={unit_demise_col}, Cap Valn={cap_valn_col}, Property={property_col}")
+                
+                # Raise exception with user-friendly message
+                raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+            
             
             # Map building names to their Cap Valn row locations
             cap_valn_mapping = {}
@@ -805,7 +880,8 @@ End Sub
             
         except Exception as e:
             self.log_message(f"❌ Error analyzing Cap Valn locations: {str(e)}")
-            return {}, None
+            # Re-raise the exception so it gets caught with proper error handling
+            raise
             
     def create_buildings_summary_sheet(self, input_path, analysis_results, cap_valn_mapping, cap_valn_col):
         """Create a new 'Buildings' sheet with building summary data and SUM formulas linking to Units sheet."""
@@ -818,6 +894,11 @@ End Sub
             
             # Open the workbook (file already exists from Units sheet creation)
             workbook = load_workbook(input_path)
+            
+            # Remove existing Buildings sheet if it exists
+            if "Buildings" in workbook.sheetnames:
+                del workbook["Buildings"]
+                self.log_message("📋 Removed existing 'Buildings' sheet")
             
             # Get building names from analysis results
             building_names = analysis_results['building_names']
@@ -1005,13 +1086,16 @@ End Sub
             # Import additional openpyxl components
             from openpyxl import load_workbook
             from openpyxl.utils import get_column_letter
-            from openpyxl.styles import NamedStyle
-            from openpyxl.worksheet.datavalidation import DataValidation
             import copy
             
             # Open the workbook directly (no copying needed)
             workbook = load_workbook(input_path)
             self.log_message("Opened original file for in-place modification")
+            
+            # Remove existing Units sheet if it exists
+            if "Units" in workbook.sheetnames:
+                del workbook["Units"]
+                self.log_message("📋 Removed existing 'Units' sheet")
             
             # Read the original Bank Schedule sheet with openpyxl to preserve formatting
             source_ws = workbook["Bank Schedule"]
@@ -1162,94 +1246,12 @@ End Sub
             
             self.log_message(f"✅ Copied {units_row - 2} unit rows to Units sheet")
             
-            # Add Status column at the end
-            self.log_message("📝 Adding Status column with data validation...")
-            
-            # Find the "Start Date" column in the original sheet
-            start_date_col_idx = None
-            df = pd.read_excel(input_path, sheet_name="Bank Schedule", header=2)
-            
-            for col_idx, col_name in enumerate(df.columns):
-                # Clean up column name thoroughly: remove extra spaces, convert to lowercase
-                clean_col_name = ' '.join(str(col_name).split()).lower() if col_name else ''
-                if 'start date' == clean_col_name or 'start date' in clean_col_name:
-                    start_date_col_idx = col_idx
-                    break
-            
-            if start_date_col_idx is None:
-                # Fallback to column M (index 12) if not found by header
-                start_date_col_idx = 12
-                self.log_message(f"   ⚠️ 'Start Date' column not found by header, using column M (index {start_date_col_idx})")
-            else:
-                self.log_message(f"   ✅ Found 'Start Date' column at index {start_date_col_idx} ('{df.columns[start_date_col_idx]}')")
-            
-            # Add Status header
-            status_col = units_ws.max_column + 1
-            status_header_cell = units_ws.cell(row=1, column=status_col, value="Status")
-            
-            # Copy header formatting from adjacent cell
-            try:
-                adjacent_cell = units_ws.cell(row=1, column=status_col - 1)
-                if adjacent_cell.has_style:
-                    status_header_cell.font = copy.copy(adjacent_cell.font)
-                    status_header_cell.border = copy.copy(adjacent_cell.border)
-                    status_header_cell.fill = copy.copy(adjacent_cell.fill)
-                    status_header_cell.alignment = copy.copy(adjacent_cell.alignment)
-            except Exception as e:
-                pass
-            
-            # Populate Status column based on Start Date
-            for row in range(2, units_row):  # Skip header row
-                # Get the Start Date value from the corresponding column (adjusted for Building column shift)
-                start_date_cell = units_ws.cell(row=row, column=start_date_col_idx + 2)  # +2 because: +1 for Building column, +1 for 0-based to 1-based
-                start_date_value = start_date_cell.value
-                
-                # Create Status cell
-                status_cell = units_ws.cell(row=row, column=status_col)
-                
-                # Set Status based on Start Date
-                if start_date_value is None or str(start_date_value).strip() == '' or str(start_date_value).lower() == 'nan':
-                    status_cell.value = "Void"
-                else:
-                    status_cell.value = "Let"
-            
-            self.log_message(f"✅ Status column populated for {units_row - 2} units")
-            
-            # Create Excel-compatible data validation for Status column
-            try:
-                from openpyxl.worksheet.datavalidation import DataValidation
-                
-                # Use Excel's exact format from reverse engineering
-                status_formula = '"Let, Void, Under Ref, Mothballed, Under Off"'
-                
-                # Create data validation matching Excel's structure
-                dv = DataValidation(
-                    type="list",
-                    formula1=status_formula,
-                    allowBlank=True,  # Excel uses allowBlank="1"
-                    showInputMessage=True,  # Excel uses showInputMessage="1"
-                    showErrorMessage=True   # Excel uses showErrorMessage="1"
-                )
-                # No custom error/prompt messages (Excel's version is clean)
-                
-                # Apply to the entire Status column (like Excel's A2:A1048576)
-                if units_row > 2:  # Only if we have data rows
-                    status_col_letter = get_column_letter(status_col)
-                    range_ref = f"{status_col_letter}2:{status_col_letter}1048576"
-                    dv.add(range_ref)
-                    units_ws.add_data_validation(dv)
-                    self.log_message(f"✅ Excel-compatible data validation applied to Status column ({status_col_letter}2:{status_col_letter}{units_row - 1})")
-                
-            except Exception as e:
-                self.log_message(f"   ⚠️ Could not add data validation to Status column: {str(e)}")
-                self.log_message("   Status column created without dropdown validation")
-            
             # Skip data validation dropdown to avoid incomplete building lists
             self.log_message(f"📝 Building column populated for all {len(building_names)} buildings (no dropdown to avoid incomplete lists)")
             
-            # Add autofilter to the headers (including new Status column)
+            # Add autofilter to the headers
             units_ws.auto_filter.ref = f"A1:{get_column_letter(units_ws.max_column)}{units_row - 1}"
-            self.log_message("✅ Autofilter applied to Units sheet headers (including Status column)")
+            self.log_message("✅ Autofilter applied to Units sheet headers")
             
             # Auto-width all columns (with better error handling)
             try:
@@ -1332,6 +1334,9 @@ End Sub
                 
             self.log_message("Step 1: Input file validation completed.")
             
+            # Check existing sheets before processing
+            initial_sheet_info = self.check_existing_sheets(input_path)
+            
             # Analyze the Bank Schedule data
             self.log_message("Step 2: Analyzing Bank Schedule data structure...")
             
@@ -1382,24 +1387,72 @@ End Sub
             
             # Add sheets directly to the original file
             try:
-                # Analyze Cap Valn locations in Bank Schedule before creating sheets
-                cap_valn_mapping, cap_valn_col = self.analyze_cap_valn_locations(input_path)
-                
-                # Create Units sheet using the building names from analysis
+                # Always create Units sheet first (independent of Buildings sheet requirements)
                 self.create_units_sheet(input_path, analysis_results['building_names'])
-                # Create Buildings summary sheet with SUM formulas referencing Units sheet
-                self.create_buildings_summary_sheet(input_path, analysis_results, cap_valn_mapping, cap_valn_col)
+                
+                # Try to create Buildings sheet (depends on specific columns)
+                try:
+                    # Analyze Cap Valn locations for Buildings sheet
+                    cap_valn_mapping, cap_valn_col = self.analyze_cap_valn_locations(input_path)
+                    
+                    # Create Buildings summary sheet
+                    self.create_buildings_summary_sheet(input_path, analysis_results, cap_valn_mapping, cap_valn_col)
+                    
+                except ValueError as ve:
+                    # Missing columns for Buildings sheet - show warning but continue
+                    if "Missing required columns" in str(ve):
+                        warning_msg = f"Buildings sheet could not be created: {str(ve)}"
+                        self.log_message(f"⚠️ {warning_msg}")
+                        self.log_message("✅ Units sheet created successfully (Buildings sheet skipped due to missing columns)")
+                        
+                        # Show special success message for Units only
+                        units_existed = initial_sheet_info['units_exists']
+                        if units_existed:
+                            units_msg = "'Units' sheet has been successfully updated!"
+                        else:
+                            units_msg = "'Units' sheet has been successfully created!"
+                        
+                        messagebox.showwarning("Buildings Sheet Skipped", 
+                                             f"{warning_msg}\n\n{units_msg} "
+                                             "To create the Buildings sheet, ensure your Excel file contains these columns:\n"
+                                             "• Unit Demise\n• 2025 Cap Valn. (£)\n• Property")
+                        
+                        self.log_message("="*50 + "\n")
+                        return
+                    else:
+                        # Re-raise other ValueError cases
+                        raise ve
+                
                 # Create hierarchical legacy view for familiar format - TEMPORARILY DISABLED
                 # self.create_hierarchical_view_sheet_from_files(input_path, analysis_results['building_names'])
+            except ValueError as ve:
+                # Handle missing columns error for Units sheet (different error)
+                if "Missing required columns" not in str(ve):
+                    self.log_message(f"❌ Data validation error: {str(ve)}")
+                    messagebox.showerror("Data Error", f"Data validation error: {str(ve)}")
+                    return
             except Exception as e:
                 self.log_message(f"❌ Error adding sheets to file: {str(e)}")
                 messagebox.showerror("File Processing Error", f"Could not add sheets to file: {str(e)}")
                 return
             
-            self.log_message(f"✅ New sheets added successfully to: {os.path.basename(input_path)}")
+            self.log_message(f"✅ Sheets processed successfully in: {os.path.basename(input_path)}")
             
-            # Show simple completion message
-            messagebox.showinfo("Success", "Operation completed successfully!")
+            # Show appropriate message based on what sheets existed initially
+            units_existed = initial_sheet_info['units_exists']
+            buildings_existed = initial_sheet_info['buildings_exists']
+            
+            if units_existed and buildings_existed:
+                success_msg = "Both 'Units' and 'Buildings' sheets have been successfully updated!"
+            elif units_existed and not buildings_existed:
+                success_msg = "'Units' sheet updated and 'Buildings' sheet created successfully!"
+            elif not units_existed and buildings_existed:
+                success_msg = "'Units' sheet created and 'Buildings' sheet updated successfully!"
+            else:
+                success_msg = "'Units' and 'Buildings' sheets created successfully!"
+            
+            # Show completion message
+            messagebox.showinfo("Success", success_msg)
             
             self.log_message("="*50 + "\n")
             

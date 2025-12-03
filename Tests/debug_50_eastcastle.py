@@ -21,7 +21,7 @@ def debug_specific_building():
             
             # Check for exact match or partial match
             if property_val and "50 eastcastle" in str(property_val).lower():
-                cap_valn = bank_ws.cell(row=row, column=28).value  # Column AB (Cap Valn)
+                cap_valn = bank_ws.cell(row=row, column=28).value  # Column AB (2025 Cap Valn)
                 found_matches.append({
                     'row': row,
                     'property': property_val,
@@ -34,7 +34,7 @@ def debug_specific_building():
             for match in found_matches:
                 print(f"    Row {match['row']}: Property='{match['property']}'")
                 print(f"                     Unit Demise='{match['unit_demise']}'")
-                print(f"                     Cap Valn='{match['cap_valn']}'")
+                print(f"                     2025 Cap Valn. (£)='{match['cap_valn']}'")
                 print()
         else:
             print("  ❌ No exact matches found")
@@ -45,10 +45,10 @@ def debug_specific_building():
                 property_val = bank_ws.cell(row=row, column=5).value
                 if property_val and "eastcastle" in str(property_val).lower() and "50" in str(property_val):
                     unit_demise = bank_ws.cell(row=row, column=6).value
-                    cap_valn = bank_ws.cell(row=row, column=28).value
+                    cap_valn = bank_ws.cell(row=row, column=28).value  # 2025 Cap Valn column
                     print(f"    Row {row}: Property='{property_val}'")
                     print(f"                     Unit Demise='{unit_demise}'")
-                    print(f"                     Cap Valn='{cap_valn}'")
+                    print(f"                     2025 Cap Valn. (£)='{cap_valn}'")
                     print()
         
         bank_wb.close()
