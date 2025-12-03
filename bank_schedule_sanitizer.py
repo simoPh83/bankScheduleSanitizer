@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bank Schedule Sanitizer
+Bank Schedule Plus
 A GUI application to sanitize Excel bank schedule files.
 """
 
@@ -20,7 +20,7 @@ import re
 class BankScheduleSanitizer:
     def __init__(self, root):
         self.root = root
-        self.root.title("Bank Schedule Sanitizer")
+        self.root.title("Bank Schedule Plus")
         self.root.geometry("600x500")
         
         # Variables
@@ -37,7 +37,7 @@ class BankScheduleSanitizer:
         # Title
         title_label = tk.Label(
             main_frame, 
-            text="Bank Schedule Sanitizer", 
+            text="Bank Schedule Plus", 
             font=("Arial", 16, "bold")
         )
         title_label.pack(pady=(0, 20))
@@ -69,7 +69,7 @@ class BankScheduleSanitizer:
         # Sanitize button
         self.sanitize_button = tk.Button(
             main_frame, 
-            text="Sanitize", 
+            text="Create", 
             command=self.sanitize_file,
             font=("Arial", 12, "bold"),
             bg="#4CAF50",
@@ -941,19 +941,33 @@ End Sub
             buildings_ws.auto_filter.ref = f"A1:{get_column_letter(len(meaningful_headers))}1"
             self.log_message("✅ Autofilter applied to Buildings sheet headers")
             
-            # Auto-width all columns
-            for column in buildings_ws.columns:
-                max_length = 0
-                column_letter = get_column_letter(column[0].column)
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
-                buildings_ws.column_dimensions[column_letter].width = adjusted_width
-            self.log_message("✅ Auto-width applied to all columns in Buildings sheet")
+            # Auto-width all columns (with better error handling)
+            try:
+                for column in buildings_ws.columns:
+                    max_length = 0
+                    column_letter = get_column_letter(column[0].column)
+                    for cell in column:
+                        try:
+                            cell_value = cell.value
+                            if cell_value is not None:
+                                cell_length = len(str(cell_value))
+                                if cell_length > max_length:
+                                    max_length = cell_length
+                        except:
+                            pass
+                    # Set reasonable width limits
+                    adjusted_width = max(min(max_length + 2, 50), 8)  # Min 8, Max 50
+                    buildings_ws.column_dimensions[column_letter].width = adjusted_width
+                self.log_message("✅ Auto-width applied to all columns in Buildings sheet")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not apply auto-width to Buildings sheet: {str(e)}")
+            
+            # Freeze panes at B2 (freeze first row and first column)
+            try:
+                buildings_ws.freeze_panes = "B2"
+                self.log_message("✅ Freeze panes applied at B2 (first row and first column frozen)")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not apply freeze panes to Buildings sheet: {str(e)}")
             
             # Save the workbook with the new sheet
             workbook.save(output_path)
@@ -1246,6 +1260,35 @@ End Sub
             except Exception as e:
                 self.log_message(f"⚠️ Could not apply auto-width: {str(e)}")
             
+            # Hide specific columns by header name
+            try:
+                columns_to_hide = ["Client", "Property Number", ".", "check 1", "check 2", "check 3", "check 4", "*"]
+                hidden_count = 0
+                
+                for col_idx in range(1, units_ws.max_column + 1):
+                    header_cell = units_ws.cell(row=1, column=col_idx)
+                    header_value = str(header_cell.value).strip() if header_cell.value else ""
+                    
+                    if header_value in columns_to_hide:
+                        col_letter = get_column_letter(col_idx)
+                        units_ws.column_dimensions[col_letter].hidden = True
+                        hidden_count += 1
+                        self.log_message(f"   Hidden column {col_letter}: '{header_value}'")
+                
+                if hidden_count > 0:
+                    self.log_message(f"✅ Hidden {hidden_count} columns in Units sheet")
+                else:
+                    self.log_message(f"⚠️ No matching columns found to hide")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not hide columns: {str(e)}")
+            
+            # Freeze panes at F2 (freeze first row and columns A-E)
+            try:
+                units_ws.freeze_panes = "F2"
+                self.log_message("✅ Freeze panes applied at F2 (first row and columns A-E frozen)")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not apply freeze panes: {str(e)}")
+            
             # Save the workbook with better error handling
             try:
                 workbook.save(output_path)
@@ -1302,7 +1345,7 @@ End Sub
             # Show save dialog with .xlsx extension (standard Excel format)
             input_name = os.path.basename(input_path)
             base_name = os.path.splitext(input_name)[0]
-            suggested_name = f"sanitized_{base_name}.xlsx"  # Use .xlsx for compatibility
+            suggested_name = f"{base_name} [PLUS].xlsx"  # Use .xlsx for compatibility
             
             output_path = filedialog.asksaveasfilename(
                 title="Save Sanitized File As",
