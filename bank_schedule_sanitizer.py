@@ -152,13 +152,98 @@ class BankScheduleSanitizer:
                 'buildings_exists': False,
                 'sheet_names': []
             }
+    
+    def check_file_lock_status(self, file_path):
+        """Check if the Excel file is locked/open by another user."""
+        try:
+            import tempfile
+            import os
+            
+            # Method 1: Try to open the file in write mode
+            try:
+                # Try to open for writing (this will fail if locked)
+                with open(file_path, 'r+b') as f:
+                    pass
+                return {'is_locked': False, 'method': 'write_test'}
+            except (PermissionError, OSError) as e:
+                # File might be locked, but let's try with openpyxl to be sure
+                pass
+            
+            # Method 2: Try to load and save with openpyxl
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(file_path)
+                
+                # Try to save to a temp file to test write access
+                temp_dir = os.path.dirname(file_path)
+                temp_file = os.path.join(temp_dir, f"~temp_lock_test_{os.getpid()}.tmp")
+                
+                try:
+                    wb.save(temp_file)
+                    os.remove(temp_file)  # Clean up
+                    wb.close()
+                    
+                    # Now try to save to the original file (this is the real test)
+                    wb = load_workbook(file_path)
+                    wb.save(file_path)
+                    wb.close()
+                    
+                    return {'is_locked': False, 'method': 'openpyxl_save'}
+                except Exception as save_error:
+                    wb.close()
+                    # Clean up temp file if it exists
+                    if os.path.exists(temp_file):
+                        try:
+                            os.remove(temp_file)
+                        except:
+                            pass
+                    return {
+                        'is_locked': True, 
+                        'method': 'openpyxl_save', 
+                        'error': str(save_error)
+                    }
+                    
+            except Exception as load_error:
+                return {
+                    'is_locked': True, 
+                    'method': 'openpyxl_load', 
+                    'error': str(load_error)
+                }
+                
+        except Exception as e:
+            # If we can't determine, assume it's accessible
+            self.log_message(f"Could not determine file lock status: {str(e)}")
+            return {'is_locked': False, 'method': 'unknown', 'error': str(e)}
         
     def update_sheet_status_message(self, file_path):
-        """Update the sheet status label based on existing sheets in the file."""
+        """Update the sheet status label based on existing sheets in the file and check for file locks."""
         if not file_path:
             self.sheet_status_label.config(text="")
             return
+        
+        # Check if file is locked first
+        self.log_message("🔒 Checking if file is locked by another user...")
+        lock_status = self.check_file_lock_status(file_path)
+        
+        if lock_status['is_locked']:
+            error_msg = f"⚠️ File appears to be open by another user and cannot be modified."
+            if 'error' in lock_status:
+                self.log_message(f"   Lock detection details: {lock_status['error']}")
             
+            status_text = "⚠️ FILE IS LOCKED - Cannot proceed while file is open by another user"
+            color = "#DC143C"  # Red for error
+            self.sheet_status_label.config(text=status_text, fg=color)
+            
+            # Disable the Create button
+            self.sanitize_button.config(state=tk.DISABLED)
+            self.log_message(error_msg)
+            return
+        else:
+            self.log_message(f"✅ File is available for modification (method: {lock_status['method']})")
+            # Re-enable Create button if it was disabled
+            self.sanitize_button.config(state=tk.NORMAL)
+        
+        # Continue with normal sheet checking
         sheet_info = self.check_existing_sheets(file_path)
         
         units_exists = sheet_info['units_exists']
@@ -908,6 +993,15 @@ End Sub
             # Create the new Buildings worksheet
             buildings_ws = workbook.create_sheet("Buildings")
             
+            # Add timestamp header at the very top
+            from datetime import datetime
+            now = datetime.now()
+            timestamp_text = f"Document updated {now.strftime('%d/%m/%Y')} at {now.strftime('%-I.%M%p').lower()}"
+            timestamp_cell = buildings_ws.cell(row=1, column=1, value=timestamp_text)
+            # Make timestamp bold and slightly larger
+            from openpyxl.styles import Font
+            timestamp_cell.font = Font(bold=True, size=11)
+            
             # Define headers - only meaningful summary columns for Buildings sheet
             # These are the columns that make sense to sum up for building totals
             meaningful_headers = [
@@ -929,7 +1023,7 @@ End Sub
             
             self.log_message("🔍 Analyzing Units sheet headers for column mapping...")
             for col in range(1, units_ws.max_column + 1):
-                header_value = units_ws.cell(row=1, column=col).value
+                header_value = units_ws.cell(row=2, column=col).value  # Row 2 since Units headers are now on row 2
                 if header_value and str(header_value).strip():
                     clean_header = str(header_value).strip()
                     self.log_message(f"   Column {col}: '{clean_header}'")
@@ -957,15 +1051,15 @@ End Sub
             self.log_message(f"📋 Final mapping: {header_to_col_mapping}")
             self.log_message(f"📋 Found {len(header_to_col_mapping)} matching columns in Units sheet")
             
-            # Write headers to the first row
+            # Write headers to row 2 (after timestamp)
             for col_num, header in enumerate(meaningful_headers, 1):
-                cell = buildings_ws.cell(row=1, column=col_num, value=header)
+                cell = buildings_ws.cell(row=2, column=col_num, value=header)
                 # Make headers bold
                 from openpyxl.styles import Font
                 cell.font = Font(bold=True)
             
-            # For each building, create a row with SUM formulas
-            for row_num, building_name in enumerate(building_names, 2):
+            # For each building, create a row with SUM formulas (starting from row 3)
+            for row_num, building_name in enumerate(building_names, 3):
                 # Write building name to the first column
                 buildings_ws.cell(row=row_num, column=1, value=building_name)
                 
@@ -1004,7 +1098,7 @@ End Sub
                         # Find Property column in Units sheet (contains building names)
                         property_col_letter = "D"  # Default to column D (Property)
                         for col in range(1, 10):
-                            header_val = units_ws.cell(row=1, column=col).value
+                            header_val = units_ws.cell(row=2, column=col).value  # Row 2 since headers are now on row 2
                             if header_val:
                                 header_clean = str(header_val).lower().strip()
                                 # Look for exact "property" match, not "property number"
@@ -1034,16 +1128,26 @@ End Sub
             
             self.log_message(f"✅ Created SUM formulas for {len(building_names)} buildings across {len(meaningful_headers)-1} data columns")
             
-            # Add autofilter to the headers
-            buildings_ws.auto_filter.ref = f"A1:{get_column_letter(len(meaningful_headers))}1"
+            # Add autofilter to the headers (row 2)
+            buildings_ws.auto_filter.ref = f"A2:{get_column_letter(len(meaningful_headers))}{2 + len(building_names)}"
             self.log_message("✅ Autofilter applied to Buildings sheet headers")
-            
-            # Auto-width all columns (with better error handling)
+
+            # Merge the first 5 cells in row 1 (A1:E1) for the timestamp
             try:
-                for column in buildings_ws.columns:
+                buildings_ws.merge_cells('A1:E1')
+                self.log_message("✅ Merged cells A1:E1 for timestamp in Buildings sheet")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not merge cells for timestamp: {str(e)}")
+            
+            # Auto-width all columns (with better error handling, excluding the merged timestamp cell)
+            try:
+                for col_idx in range(1, len(meaningful_headers) + 1):
+                    column_letter = get_column_letter(col_idx)
                     max_length = 0
-                    column_letter = get_column_letter(column[0].column)
-                    for cell in column:
+                    
+                    # Start from row 2 to skip the merged timestamp row
+                    for row_idx in range(2, 3 + len(building_names)):  # Headers + data rows
+                        cell = buildings_ws.cell(row=row_idx, column=col_idx)
                         try:
                             cell_value = cell.value
                             if cell_value is not None:
@@ -1052,17 +1156,18 @@ End Sub
                                     max_length = cell_length
                         except:
                             pass
-                    # Set reasonable width limits
-                    adjusted_width = max(min(max_length + 2, 50), 8)  # Min 8, Max 50
+                    
+                    # Set reasonable width limits, especially for Buildings sheet
+                    adjusted_width = max(min(max_length + 2, 25), 8)  # Reduced max from 50 to 25 for Buildings
                     buildings_ws.column_dimensions[column_letter].width = adjusted_width
                 self.log_message("✅ Auto-width applied to all columns in Buildings sheet")
             except Exception as e:
                 self.log_message(f"⚠️ Could not apply auto-width to Buildings sheet: {str(e)}")
             
-            # Freeze panes at B2 (freeze first row and first column)
+            # Freeze panes at B3 (freeze timestamp and header rows and first column)
             try:
-                buildings_ws.freeze_panes = "B2"
-                self.log_message("✅ Freeze panes applied at B2 (first row and first column frozen)")
+                buildings_ws.freeze_panes = "B3"
+                self.log_message("✅ Freeze panes applied at B3 (timestamp and header rows and first column frozen)")
             except Exception as e:
                 self.log_message(f"⚠️ Could not apply freeze panes to Buildings sheet: {str(e)}")
             
@@ -1119,10 +1224,20 @@ End Sub
             # Create the new Units worksheet
             units_ws = workbook.create_sheet("Units")
             
+            # Add timestamp header at the very top
+            from datetime import datetime
+            now = datetime.now()
+            timestamp_text = f"Document updated {now.strftime('%d/%m/%Y')} at {now.strftime('%-I.%M%p').lower()}"
+            timestamp_cell = units_ws.cell(row=1, column=1, value=timestamp_text)
+            # Make timestamp bold and slightly larger
+            from openpyxl.styles import Font
+            timestamp_cell.font = Font(bold=True, size=11)
+            
             # Build column mapping: source column number -> target column number
             column_mapping = {}
             
             # Copy headers from source sheet (row 3, which is index 2)
+            # Headers now go to row 2 (shifted down by 1)
             # Start with "Surveyor" column (skip Building column since Property already has building names)
             # Also skip the empty column after Surveyor
             
@@ -1142,7 +1257,7 @@ End Sub
                 # Build column mapping: source column -> target column
                 column_mapping[col_idx] = target_col
                 
-                target_cell = units_ws.cell(row=1, column=target_col)
+                target_cell = units_ws.cell(row=2, column=target_col)  # Row 2 instead of row 1
                 
                 # Handle potential formulas in headers (rare but possible)
                 if source_cell.value and isinstance(source_cell.value, str) and source_cell.value.startswith('='):
@@ -1175,7 +1290,7 @@ End Sub
             
             # Track units and their buildings
             current_building = None
-            units_row = 2  # Start from row 2 (after headers)
+            units_row = 3  # Start from row 3 (after timestamp and headers)
             
             # Process all data rows starting from row 4 (after headers)
             for source_row_idx in range(4, source_ws.max_row + 1):
@@ -1244,21 +1359,31 @@ End Sub
                         
                         units_row += 1
             
-            self.log_message(f"✅ Copied {units_row - 2} unit rows to Units sheet")
+            self.log_message(f"✅ Copied {units_row - 3} unit rows to Units sheet")  # -3 because we start from row 3
             
             # Skip data validation dropdown to avoid incomplete building lists
             self.log_message(f"📝 Building column populated for all {len(building_names)} buildings (no dropdown to avoid incomplete lists)")
             
-            # Add autofilter to the headers
-            units_ws.auto_filter.ref = f"A1:{get_column_letter(units_ws.max_column)}{units_row - 1}"
+            # Add autofilter to the headers (row 2)
+            units_ws.auto_filter.ref = f"A2:{get_column_letter(units_ws.max_column)}{units_row - 1}"
             self.log_message("✅ Autofilter applied to Units sheet headers")
-            
-            # Auto-width all columns (with better error handling)
+
+            # Merge the first 5 cells in row 1 (A1:E1) for the timestamp
             try:
-                for column in units_ws.columns:
+                units_ws.merge_cells('A1:E1')
+                self.log_message("✅ Merged cells A1:E1 for timestamp in Units sheet")
+            except Exception as e:
+                self.log_message(f"⚠️ Could not merge cells for timestamp: {str(e)}")
+            
+            # Auto-width all columns (with better error handling, excluding the merged timestamp cell)
+            try:
+                for col_idx in range(1, units_ws.max_column + 1):
+                    column_letter = get_column_letter(col_idx)
                     max_length = 0
-                    column_letter = get_column_letter(column[0].column)
-                    for cell in column:
+                    
+                    # Start from row 2 to skip the merged timestamp row
+                    for row_idx in range(2, units_ws.max_row + 1):
+                        cell = units_ws.cell(row=row_idx, column=col_idx)
                         try:
                             cell_value = cell.value
                             if cell_value is not None:
@@ -1267,8 +1392,9 @@ End Sub
                                     max_length = cell_length
                         except:
                             pass
+                    
                     # Set reasonable width limits
-                    adjusted_width = max(min(max_length + 2, 50), 8)  # Min 8, Max 50
+                    adjusted_width = max(min(max_length + 2, 30), 8)  # Reduced max from 50 to 30
                     units_ws.column_dimensions[column_letter].width = adjusted_width
                 self.log_message("✅ Auto-width applied to all columns in Units sheet")
             except Exception as e:
@@ -1280,7 +1406,7 @@ End Sub
                 hidden_count = 0
                 
                 for col_idx in range(1, units_ws.max_column + 1):
-                    header_cell = units_ws.cell(row=1, column=col_idx)
+                    header_cell = units_ws.cell(row=2, column=col_idx)  # Row 2 since headers are now on row 2
                     header_value = str(header_cell.value).strip() if header_cell.value else ""
                     
                     if header_value in columns_to_hide:
@@ -1296,10 +1422,10 @@ End Sub
             except Exception as e:
                 self.log_message(f"⚠️ Could not hide columns: {str(e)}")
             
-            # Freeze panes at F2 (freeze first row and columns A-E)
+            # Freeze panes at F3 (freeze timestamp and header rows and columns A-E)
             try:
-                units_ws.freeze_panes = "F2"
-                self.log_message("✅ Freeze panes applied at F2 (first row and columns A-E frozen)")
+                units_ws.freeze_panes = "F3"
+                self.log_message("✅ Freeze panes applied at F3 (timestamp and header rows and columns A-E frozen)")
             except Exception as e:
                 self.log_message(f"⚠️ Could not apply freeze panes: {str(e)}")
             
@@ -1333,6 +1459,21 @@ End Sub
                 return
                 
             self.log_message("Step 1: Input file validation completed.")
+            
+            # Check if file is locked before proceeding
+            self.log_message("Step 1.5: Checking file accessibility...")
+            lock_status = self.check_file_lock_status(input_path)
+            if lock_status['is_locked']:
+                error_details = f": {lock_status.get('error', 'Unknown reason')}" if 'error' in lock_status else ""
+                error_msg = f"Cannot process file - it appears to be open by another user{error_details}"
+                self.log_message(f"❌ {error_msg}")
+                messagebox.showerror("File Locked", 
+                    f"{error_msg}\n\n"
+                    "Please ensure the Excel file is closed by all users before running this operation.\n"
+                    "If the file is on a shared network drive, check that no one else has it open.")
+                return
+            else:
+                self.log_message(f"✅ File is accessible for modification")
             
             # Check existing sheets before processing
             initial_sheet_info = self.check_existing_sheets(input_path)
