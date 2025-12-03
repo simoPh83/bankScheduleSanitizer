@@ -209,8 +209,8 @@ class BankScheduleSanitizer:
             
             # Replace all cell references in the formula
             refactored_formula = re.sub(cell_pattern, replace_cell_ref, formula)
-            
-            self.log_message(f"   📐 Formula refactored: {formula} → {refactored_formula}")
+
+            # self.log_message(f"   📐 Formula refactored: {formula} → {refactored_formula}")
             return refactored_formula
             
         except Exception as e:
@@ -560,13 +560,13 @@ End Sub
             col_num //= 26
         return result
 
-    def create_hierarchical_view_sheet_from_files(self, input_path, output_path, building_names):
+    def create_hierarchical_view_sheet_from_files(self, input_path, building_names):
         """Create a Legacy View sheet by opening the output file and adding the sheet"""
         try:
             self.log_message("📋 Creating Legacy View sheet from files...")
             
             # Open the output file (that should already have Units sheet)
-            workbook = openpyxl.load_workbook(output_path)
+            workbook = openpyxl.load_workbook(input_path)
             
             # Get the Units sheet to understand its structure
             units_ws = workbook['Units']
@@ -577,7 +577,7 @@ End Sub
             
             if success:
                 # Save the updated workbook
-                workbook.save(output_path)
+                workbook.save(input_path)
                 workbook.close()
                 self.log_message("✅ Legacy View sheet added successfully")
                 return True
@@ -691,7 +691,7 @@ End Sub
             
             bank_ws = wb['Bank Schedule']
             
-            # Find the "Unit Demise" column and "2024 Cap Valn. (£)" column
+            # Find the "Unit Demise" column and "2025 Cap Valn. (£)" column
             unit_demise_col = None
             cap_valn_col = None
             property_col = None
@@ -703,9 +703,9 @@ End Sub
                     if 'unit demise' in header_clean:
                         unit_demise_col = col
                         self.log_message(f"Found 'Unit Demise' column at: {chr(64+col)}")
-                    elif '2024 cap valn' in header_clean:
+                    elif '2025 cap valn' in header_clean:
                         cap_valn_col = col  # Should be column AB (28)
-                        self.log_message(f"Found '2024 Cap Valn' column at: {chr(64+col) if col <= 26 else 'A' + chr(64+col-26)}")
+                        self.log_message(f"Found '2025 Cap Valn' column at: {chr(64+col) if col <= 26 else 'A' + chr(64+col-26)}")
                     elif header_clean == 'property':
                         property_col = col
                         self.log_message(f"Found 'Property' column at: {chr(64+col)}")
@@ -801,13 +801,13 @@ End Sub
             for building, row in cap_valn_mapping.items():
                 self.log_message(f"  {building} -> Row {row}")
             
-            return cap_valn_mapping
+            return cap_valn_mapping, cap_valn_col
             
         except Exception as e:
             self.log_message(f"❌ Error analyzing Cap Valn locations: {str(e)}")
-            return {}
+            return {}, None
             
-    def create_buildings_summary_sheet(self, input_path, output_path, analysis_results, cap_valn_mapping):
+    def create_buildings_summary_sheet(self, input_path, analysis_results, cap_valn_mapping, cap_valn_col):
         """Create a new 'Buildings' sheet with building summary data and SUM formulas linking to Units sheet."""
         try:
             self.log_message("Step 5: Creating Buildings summary sheet with SUM formulas...")
@@ -817,7 +817,7 @@ End Sub
             from openpyxl.utils import get_column_letter
             
             # Open the workbook (file already exists from Units sheet creation)
-            workbook = load_workbook(output_path)
+            workbook = load_workbook(input_path)
             
             # Get building names from analysis results
             building_names = analysis_results['building_names']
@@ -834,8 +834,8 @@ End Sub
                 "Net Area", 
                 "Rent PA (£)",
                 "2023 ERV (£)",
-                "2024 ERV (£)", 
-                "2024 Cap Valn. (£)"
+                "2025 ERV (£)", 
+                "2025 Cap Valn. (£)"
             ]
             
             self.log_message(f"📋 Using {len(meaningful_headers)} meaningful summary columns for Buildings sheet")
@@ -854,7 +854,21 @@ End Sub
                     self.log_message(f"   Column {col}: '{clean_header}'")
                     
                     for meaningful_header in meaningful_headers[1:]:  # Skip "Building" 
-                        if meaningful_header.lower() in clean_header.lower() or clean_header.lower() in meaningful_header.lower():
+                        # Improved matching logic to avoid false positives
+                        clean_header_lower = clean_header.lower().strip()
+                        meaningful_header_lower = meaningful_header.lower().strip()
+                        
+                        # Skip very short headers that could cause false matches
+                        if len(clean_header_lower) < 3:
+                            continue
+                        
+                        # Remove common punctuation for comparison
+                        clean_for_comparison = clean_header_lower.replace('(', '').replace(')', '').replace('£', '').replace('.', '').replace(',', '')
+                        meaningful_for_comparison = meaningful_header_lower.replace('(', '').replace(')', '').replace('£', '').replace('.', '').replace(',', '')
+                        
+                        # Check for substantial word-level overlap, not just character substring
+                        if (len(meaningful_for_comparison) > 3 and meaningful_for_comparison in clean_for_comparison) or \
+                           (len(clean_for_comparison) > 3 and clean_for_comparison in meaningful_for_comparison):
                             header_to_col_mapping[meaningful_header] = col
                             self.log_message(f"   ✅ Matched '{meaningful_header}' -> Column {col} ('{clean_header}')")
                             break
@@ -878,13 +892,15 @@ End Sub
                 for col_num in range(2, len(meaningful_headers) + 1):
                     header_name = meaningful_headers[col_num - 1]
                     
-                    # Special handling for 2024 Cap Valn. - use direct cell reference from mapping
-                    if header_name == "2024 Cap Valn. (£)":
+                    # Special handling for 2025 Cap Valn. - use direct cell reference from mapping
+                    if header_name == "2025 Cap Valn. (£)":
                         try:
                             if building_name in cap_valn_mapping:
                                 cap_valn_row = cap_valn_mapping[building_name]
                                 # Create direct cell reference to Bank Schedule with correct Excel syntax
-                                formula = f'=\'Bank Schedule\'!AB{cap_valn_row}'
+                                # Convert column number to Excel letter format
+                                cap_valn_col_letter = get_column_letter(cap_valn_col)
+                                formula = f'=\'Bank Schedule\'!{cap_valn_col_letter}{cap_valn_row}'
                                 
                                 cell = buildings_ws.cell(row=row_num, column=col_num)
                                 cell.value = formula
@@ -970,7 +986,7 @@ End Sub
                 self.log_message(f"⚠️ Could not apply freeze panes to Buildings sheet: {str(e)}")
             
             # Save the workbook with the new sheet
-            workbook.save(output_path)
+            workbook.save(input_path)
             workbook.close()
             
             self.log_message("✅ Buildings summary sheet created successfully with SUM formulas")
@@ -981,7 +997,7 @@ End Sub
             self.log_message(f"❌ Error creating Buildings summary sheet: {str(e)}")
             raise
 
-    def create_units_sheet(self, input_path, output_path, building_names):
+    def create_units_sheet(self, input_path, building_names):
         """Create a new 'Units' sheet with all unit data and building validation dropdown."""
         try:
             self.log_message("Step 4: Creating Units sheet with data validation...")
@@ -992,14 +1008,10 @@ End Sub
             from openpyxl.styles import NamedStyle
             from openpyxl.worksheet.datavalidation import DataValidation
             import copy
-            import shutil
             
-            # First, copy the original file to preserve all formatting and formulas
-            shutil.copy2(input_path, output_path)
-            self.log_message("Original file copied with all formatting preserved")
-            
-            # Open the workbook
-            workbook = load_workbook(output_path)
+            # Open the workbook directly (no copying needed)
+            workbook = load_workbook(input_path)
+            self.log_message("Opened original file for in-place modification")
             
             # Read the original Bank Schedule sheet with openpyxl to preserve formatting
             source_ws = workbook["Bank Schedule"]
@@ -1291,7 +1303,7 @@ End Sub
             
             # Save the workbook with better error handling
             try:
-                workbook.save(output_path)
+                workbook.save(input_path)
                 workbook.close()
                 self.log_message("✅ Units sheet created successfully (no dropdown for complete building list)")
                 return True
@@ -1342,49 +1354,52 @@ End Sub
             
             self.log_message("Step 3: Processing file and creating Units & Buildings sheets...")
             
-            # Show save dialog with .xlsx extension (standard Excel format)
+            # Create backup of original file for safety
             input_name = os.path.basename(input_path)
-            base_name = os.path.splitext(input_name)[0]
-            suggested_name = f"{base_name} [PLUS].xlsx"  # Use .xlsx for compatibility
+            input_dir = os.path.dirname(input_path)
+            name_without_ext = os.path.splitext(input_name)[0]
+            ext = os.path.splitext(input_name)[1]
+            backup_path = os.path.join(input_dir, f"{name_without_ext}_BACKUP{ext}")
             
-            output_path = filedialog.asksaveasfilename(
-                title="Save Sanitized File As",
-                defaultextension=".xlsx",
-                initialfile=suggested_name,
-                filetypes=[
-                    ("Excel files", "*.xlsx"),
-                    ("Excel Macro-Enabled files", "*.xlsm"),
-                    ("All files", "*.*")
-                ]
-            )
+            # Handle case where backup already exists
+            backup_counter = 1
+            original_backup_path = backup_path
+            while os.path.exists(backup_path):
+                backup_path = os.path.join(input_dir, f"{name_without_ext}_BACKUP_{backup_counter}{ext}")
+                backup_counter += 1
             
-            if not output_path:
-                self.log_message("⚠ Save operation cancelled by user.")
-                self.log_message("="*50 + "\n")
-                return
+            try:
+                shutil.copy2(input_path, backup_path)
+                self.log_message(f"🔄 Created backup: {os.path.basename(backup_path)}")
+            except Exception as e:
+                if not messagebox.askyesno("Backup Failed", 
+                    f"Could not create backup file: {str(e)}\n\n" +
+                    "Do you want to continue anyway? (This will modify your original file directly)"):
+                    self.log_message("⚠ Operation cancelled - backup failed and user chose not to continue.")
+                    return
+                self.log_message("⚠ Warning: Proceeding without backup!")
+                backup_path = None
             
-            # Create the new file - Units sheet first, then Buildings with SUM formulas
+            # Add sheets directly to the original file
             try:
                 # Analyze Cap Valn locations in Bank Schedule before creating sheets
-                cap_valn_mapping = self.analyze_cap_valn_locations(input_path)
+                cap_valn_mapping, cap_valn_col = self.analyze_cap_valn_locations(input_path)
                 
                 # Create Units sheet using the building names from analysis
-                self.create_units_sheet(input_path, output_path, analysis_results['building_names'])
+                self.create_units_sheet(input_path, analysis_results['building_names'])
                 # Create Buildings summary sheet with SUM formulas referencing Units sheet
-                self.create_buildings_summary_sheet(input_path, output_path, analysis_results, cap_valn_mapping)
+                self.create_buildings_summary_sheet(input_path, analysis_results, cap_valn_mapping, cap_valn_col)
                 # Create hierarchical legacy view for familiar format - TEMPORARILY DISABLED
-                # self.create_hierarchical_view_sheet_from_files(input_path, output_path, analysis_results['building_names'])
+                # self.create_hierarchical_view_sheet_from_files(input_path, analysis_results['building_names'])
             except Exception as e:
-                self.log_message(f"❌ Error creating output file: {str(e)}")
-                messagebox.showerror("File Creation Error", f"Could not create output file: {str(e)}")
+                self.log_message(f"❌ Error adding sheets to file: {str(e)}")
+                messagebox.showerror("File Processing Error", f"Could not add sheets to file: {str(e)}")
                 return
             
-            self.log_message(f"✅ Sanitized file saved successfully to: {os.path.basename(output_path)}")
+            self.log_message(f"✅ New sheets added successfully to: {os.path.basename(input_path)}")
             
-            # Show simple success message
-            success_message = "File processed successfully!"
-            
-            messagebox.showinfo("Success", success_message)
+            # Show simple completion message
+            messagebox.showinfo("Success", "Operation completed successfully!")
             
             self.log_message("="*50 + "\n")
             
