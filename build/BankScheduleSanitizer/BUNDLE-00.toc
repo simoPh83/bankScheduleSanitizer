@@ -1,0 +1,4 @@
+([('BankScheduleSanitizer',
+   '/Volumes/Marketing/Simone Morciano/python working '
+   'folder/bankScheduleSanitizer/dist/BankScheduleSanitizer',
+   'EXECUTABLE')],)

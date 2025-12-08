@@ -6,11 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('instructions', 'instructions')],
-    hiddenimports=['pandas', 'openpyxl', 'xlsxwriter'],
+    hiddenimports=['pandas', 'openpyxl', 'xlsxwriter', 'tkinter', 'datetime'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pytest', '_pytest'],
+    excludes=['pytest', '_pytest', 'test'],
     noarchive=False,
     optimize=0,
 )
@@ -35,4 +35,10 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+app = BUNDLE(
+    exe,
+    name='BankScheduleSanitizer.app',
+    icon=None,
+    bundle_identifier='com.simoneph.bankschedulesanitizer',
 )
